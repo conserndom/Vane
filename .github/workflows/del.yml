@@ -1,0 +1,17 @@
+name: Delete Old Branches
+
+on:
+  workflow_dispatch: # 手动触发，防止误删
+  # schedule:
+  #   - cron: '0 0 * * 1' # 如果需要，可以设置为每周一凌晨自动运行
+
+jobs:
+  delete-branches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all branches except master
+        uses: ScribeMD/delete-branches@v2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          allowed_prefixes: master, main # 排除 master 和 main 分支
+          dry_run: false # 设置为 true 可以先进行模拟运行，不实际执行删除
