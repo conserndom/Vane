@@ -1,5 +1,50 @@
 #                                           Vane
 
+还没补齐的功能（按影响排序）
+WebService 仍是 TCP 透传，不是完整 HTTP 反向代理
+
+目前引擎是 TcpListener + copy_bidirectional，没有 Host/Path 路由匹配、Header 透传控制、HTTPS 强制跳转等 HTTP 语义。.
+
+虽然有 /webservice/:id/routes 接口，但路由规则并未驱动真正的 HTTP 路由引擎。.
+
+TLS 证书“签发/续期”未真实实现
+
+issue_tls 现在只是写入字符串占位（"issued cert for ..."），不是真正 ACME 签发。.
+
+TLS 引擎只是周期 metadata 检查证书文件存在性，不是自动续期与装载。.
+
+PortForward 只支持 TCP，缺 UDP
+
+明确判断非 TCP 直接返回，UDP 转发未实现。.
+
+DDNS 仅 Cloudflare 单 provider
+
+当前同步逻辑只实现 Cloudflare API 路径；原先多 provider（阿里云/DNSPod/腾讯云）仍缺。.
+
+统计与日志多数是“接口有了、数据弱实现”
+
+portforward stats 目前返回固定 0，占位值。.
+
+Web 访问日志由管理接口手动 append，不是代理流量自动采集。.
+
+IPFilter 目标语义仍较粗
+
+已有 targets/upload，但规则匹配逻辑主要是全局 CIDR 命中放行，target 维度精细执行链路还不完整。.
+
+会话与安全机制仍是简化版
+
+会话是内存 map + 持久化元数据，缺 token 过期、签名、刷新策略等。.
+
+系统能力缺口
+
+旧版里的部分系统级行为（如更完整监控/系统信息/更细粒度运行控制）在 Rust 版仍未对齐（从当前路由与引擎可见）。.
+
+
+
+
+
+
+
 > 轻量级网络服务管理工具 — 端口转发 · DDNS · Web服务 · TLS证书
 
 <div align="center">
