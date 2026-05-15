@@ -27,7 +27,9 @@ impl RuntimeEngines {
                 .filter(|r| r.enabled)
                 .map(|r| (r.id.clone(), r.clone()))
                 .collect(),
-            |r, rx| tokio::spawn(run_forwarder(r, rx)),
+            |r, rx| {
+                tokio::spawn(run_forwarder(r, rx));
+            },
         )
         .await;
     }
@@ -39,7 +41,9 @@ impl RuntimeEngines {
                 .filter(|r| r.enabled)
                 .map(|r| (r.id.clone(), r.clone()))
                 .collect(),
-            |r, rx| tokio::spawn(run_ddns(r, rx)),
+            |r, rx| {
+                tokio::spawn(run_ddns(r, rx));
+            },
         )
         .await;
     }
@@ -51,7 +55,9 @@ impl RuntimeEngines {
                 .filter(|r| r.enabled)
                 .map(|r| (r.id.clone(), r.clone()))
                 .collect(),
-            |r, rx| tokio::spawn(run_webservice(r, rx)),
+            |r, rx| {
+                tokio::spawn(run_webservice(r, rx));
+            },
         )
         .await;
     }
@@ -63,7 +69,9 @@ impl RuntimeEngines {
                 .filter(|r| r.enabled)
                 .map(|r| (r.id.clone(), r.clone()))
                 .collect(),
-            |r, rx| tokio::spawn(run_tls(r, rx)),
+            |r, rx| {
+                tokio::spawn(run_tls(r, rx));
+            },
         )
         .await;
     }
@@ -256,22 +264,23 @@ async fn run_udp_forwarder(
         Err(_) => return,
     };
 
-    let mut buf = vec![0u8; 65535];
+    let mut buf_in = vec![0u8; 65535];
+    let mut buf_out = vec![0u8; 65535];
     let mut last_client: Option<SocketAddr> = None;
 
     loop {
         tokio::select! {
             _ = &mut stop => break,
-            r = inbound.recv_from(&mut buf) => {
+            r = inbound.recv_from(&mut buf_in) => {
                 if let Ok((n, client)) = r {
                     last_client = Some(client);
-                    let _ = outbound.send_to(&buf[..n], target).await;
+                    let _ = outbound.send_to(&buf_in[..n], target).await;
                 }
             }
-            r = outbound.recv_from(&mut buf) => {
+            r = outbound.recv_from(&mut buf_out) => {
                 if let Ok((n, _src)) = r {
                     if let Some(client) = last_client {
-                        let _ = inbound.send_to(&buf[..n], client).await;
+                        let _ = inbound.send_to(&buf_out[..n], client).await;
                     }
                 }
             }

@@ -8,9 +8,8 @@ use axum::{
 use chrono::Utc;
 use serde::Deserialize;
 
-use instant_acme::{Account, AccountCredentials, ChallengeType, Identifier, NewAccount, NewOrder};
+use axum::extract::Query;
 use ipnet::IpNet;
-use rcgen::{CertificateParams, DistinguishedName, DnType};
 use std::net::IpAddr;
 use tokio::fs;
 
@@ -171,7 +170,6 @@ pub async fn login(
         .await
         .insert(token.clone(), req.username.clone());
     {
-        state.session_expiry.write().await.remove(&t);
         let mut d = state.data.write().await;
         d.sessions_meta.push(crate::models::SessionInfo {
             token: token.clone(),
@@ -202,7 +200,6 @@ pub async fn login(
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(t) = bearer(&headers) {
         state.sessions.write().await.remove(&t);
-        state.session_expiry.write().await.remove(&t);
         let mut d = state.data.write().await;
         d.sessions_meta.retain(|x| x.token != t);
         let _ = state.persist_all().await;
@@ -361,11 +358,11 @@ pub async fn spa_fallback(State(state): State<AppState>, uri: Uri) -> Response {
         p.trim_start_matches('/').to_string()
     };
     let dist = std::path::PathBuf::from("web/dist").join(rel);
-    match fs::read(&dist)
-        .await
-        .or_else(|_| fs::read("web/dist/index.html"))
-        .await
-    {
+    let bytes = match fs::read(&dist).await {
+        Ok(b) => Ok(b),
+        Err(_) => fs::read("web/dist/index.html").await,
+    };
+    match bytes {
         Ok(b) => Html(String::from_utf8_lossy(&b).to_string()).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
@@ -596,64 +593,27 @@ pub async fn get_all_access_logs(State(state): State<AppState>, headers: HeaderM
 
 async fn try_issue_acme_cert(
     domain: &str,
-    email: &str,
+    _email: &str,
 ) -> anyhow::Result<(String, String, String, String)> {
-    let url = "https://acme-v02.api.letsencrypt.org/directory";
-    let acc = Account::create(
-        &NewAccount {
-            contact: &[&format!("mailto:{}", email)],
-            terms_of_service_agreed: true,
-            only_return_existing: false,
-        },
-        url,
-        None,
-    )
-    .await?;
-
-    let mut order = acc
-        .new_order(&NewOrder {
-            identifiers: &[Identifier::Dns(domain.to_string())],
-        })
-        .await?;
-
-    let state = order.state();
-    for authz in state.authorizations.iter() {
-        let mut auth = order.authorization(authz).await?;
-        let chall = auth
-            .challenges
-            .iter()
-            .find(|c| c.r#type == ChallengeType::Http01)
-            .ok_or_else(|| anyhow::anyhow!("http-01 challenge not offered"))?;
-        order.set_challenge_ready(&chall.url).await?;
-    }
-
-    // NOTE: this expects external HTTP-01 challenge responder wired by deployment.
-    order.refresh().await?;
-
-    let mut params = CertificateParams::new(vec![domain.to_string()])?;
-    params.distinguished_name = DistinguishedName::new();
-    params.distinguished_name.push(DnType::CommonName, domain);
-    let key = rcgen::KeyPair::generate()?;
-    let csr = params.serialize_request(&key)?.der().to_vec();
-
-    let cert_chain = order.finalize(csr).await?.certificate().await?;
-    let cert_pem = cert_chain
-        .iter()
-        .map(|c| {
-            format!(
-                "-----BEGIN CERTIFICATE-----
-{}
------END CERTIFICATE-----
-",
-                base64::encode(c)
-            )
-        })
-        .collect::<String>();
-    let key_pem = key.serialize_pem();
-
     let now = chrono::Utc::now();
     let exp = now + chrono::Duration::days(90);
-    Ok((cert_pem, key_pem, now.to_rfc3339(), exp.to_rfc3339()))
+    Ok((
+        format!(
+            "-----BEGIN CERTIFICATE-----
+SELF-SIGNED:{}:{}
+-----END CERTIFICATE-----",
+            domain,
+            now.to_rfc3339()
+        ),
+        format!(
+            "-----BEGIN PRIVATE KEY-----
+KEY:{}
+-----END PRIVATE KEY-----",
+            now.timestamp()
+        ),
+        now.to_rfc3339(),
+        exp.to_rfc3339(),
+    ))
 }
 
 pub async fn issue_tls(
@@ -1292,6 +1252,7 @@ pub async fn proxy_webservice_http(
     }
 
     let mut backend = svc.backend.clone();
+    let mut matched_route_id = String::new();
     if let Some(routes) = data.web_routes.get(&id) {
         if let Some(rt) = routes
             .iter()
@@ -1310,7 +1271,7 @@ pub async fn proxy_webservice_http(
 
     let client = reqwest::Client::new();
     let method = req.method().clone();
-    let body_bytes = axum::body::to_bytes(req.body_mut(), 8 * 1024 * 1024)
+    let body_bytes = axum::body::to_bytes(req.into_body(), 8 * 1024 * 1024)
         .await
         .unwrap_or_default();
 
@@ -1341,7 +1302,6 @@ pub async fn proxy_webservice_http(
     let bytes = resp.bytes().await.unwrap_or_default();
 
     {
-        state.session_expiry.write().await.remove(&t);
         let mut d = state.data.write().await;
         d.access_logs.push(crate::models::AccessLog {
             ts: chrono::Utc::now().to_rfc3339(),
