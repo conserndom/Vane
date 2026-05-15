@@ -1252,7 +1252,7 @@ pub async fn proxy_webservice_http(
     }
 
     let mut backend = svc.backend.clone();
-    let mut matched_route_id = String::new();
+    let matched_route_id = String::new();
     if let Some(routes) = data.web_routes.get(&id) {
         if let Some(rt) = routes
             .iter()

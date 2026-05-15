@@ -13,7 +13,10 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
 
 pub fn hash_password(p: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
-    Ok(Pbkdf2.hash_password(p.as_bytes(), &salt)?.to_string())
+    Pbkdf2
+        .hash_password(p.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| anyhow::anyhow!("password hash failed: {e}"))
 }
 
 pub fn verify_password(p: &str, h: &str) -> bool {

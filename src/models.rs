@@ -106,6 +106,9 @@ pub struct TlsArtifact {
     pub id: String,
     pub cert_pem: String,
     pub key_pem: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub auto_renew: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -124,4 +127,15 @@ pub struct SessionInfo {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
-pub struct DashboardStats { pub portforward_total: usize, pub portforward_enabled: usize, pub ddns_total: usize, pub ddns_enabled: usize, pub webservice_total: usize, pub webservice_enabled: usize, pub tls_total: usize, pub tls_enabled: usize, pub ipfilter_total: usize, pub active_sessions: usize }
+pub struct DashboardStats {
+    pub portforward_total: usize,
+    pub portforward_enabled: usize,
+    pub ddns_total: usize,
+    pub ddns_enabled: usize,
+    pub webservice_total: usize,
+    pub webservice_enabled: usize,
+    pub tls_total: usize,
+    pub tls_enabled: usize,
+    pub ipfilter_total: usize,
+    pub active_sessions: usize,
+}
