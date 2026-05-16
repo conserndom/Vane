@@ -55,13 +55,16 @@ jobs:
 
       - name: Build arm64 binary
         uses: houseabsolute/actions-rust-cross@v1
+        env:
+          CARGO_TARGET_DIR: target/aarch64-cross
         with:
           command: build
           target: aarch64-unknown-linux-musl
           args: "--release"
+          use-rust-cache: false
 
       - name: Pack arm64 binary
-        run: cp target/aarch64-unknown-linux-musl/release/vane vane-linux-arm64
+        run: cp target/aarch64-cross/aarch64-unknown-linux-musl/release/vane vane-linux-arm64
 
       - name: Checksum
         run: sha256sum vane-linux-amd64 vane-linux-arm64 > sha256sums.txt
