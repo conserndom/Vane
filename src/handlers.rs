@@ -625,7 +625,12 @@ pub async fn issue_tls(
         return unauthorized();
     }
     let mut d = state.data.write().await;
-    if let Some(rule) = d.tls.iter().find(|x| x.id == id) {
+    if let Some(domain) = d
+        .tls
+        .iter()
+        .find(|x| x.id == id)
+        .map(|rule| rule.domain.clone())
+    {
         d.tls_artifacts.retain(|x| x.id != id);
         let now = chrono::Utc::now();
         let exp = now + chrono::Duration::days(90);
@@ -633,7 +638,7 @@ pub async fn issue_tls(
             id: id.clone(),
             cert_pem: format!(
                 "-----BEGIN CERTIFICATE-----\nSELF-SIGNED:{}:{}\n-----END CERTIFICATE-----",
-                rule.domain,
+                domain,
                 now.to_rfc3339()
             ),
             key_pem: format!(
