@@ -1,8 +1,8 @@
 use axum::{
     body::Body,
     extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode, Uri},
-    response::{Html, IntoResponse, Response},
+    http::{header::CONTENT_TYPE, HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -11,7 +11,6 @@ use serde::Deserialize;
 use axum::extract::Query;
 use ipnet::IpNet;
 use std::net::IpAddr;
-use tokio::fs;
 
 use crate::{
     auth::{bearer, verify_password},
@@ -343,29 +342,51 @@ crud!(
     IpFilterRule
 );
 
+include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
+
 pub async fn spa_fallback(State(state): State<AppState>, uri: Uri) -> Response {
     let safe = state.config.read().await.admin.safe_entry.clone();
-    let mut p = uri.path().to_string();
-    if !safe.is_empty() {
-        let prefix = format!("/{}", safe.trim_matches('/'));
-        if p.starts_with(&prefix) {
-            p = p[prefix.len()..].to_string();
+    let rel = frontend_asset_path(uri.path(), &safe);
+
+    if let Some(response) = embedded_asset_response(&rel) {
+        return response;
+    }
+
+    if rel != "index.html" {
+        if let Some(response) = embedded_asset_response("index.html") {
+            return response;
         }
     }
-    let rel = if p == "/" {
+
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+fn frontend_asset_path(path: &str, safe_entry: &str) -> String {
+    let mut p = path.to_string();
+    if !safe_entry.is_empty() {
+        let prefix = format!("/{}", safe_entry.trim_matches('/'));
+        if p == prefix {
+            p = "/".to_string();
+        } else if let Some(rest) = p.strip_prefix(&format!("{}/", prefix)) {
+            p = format!("/{rest}");
+        }
+    }
+
+    let rel = p.trim_start_matches('/');
+    if rel.is_empty() || rel.split('/').any(|part| part == "..") {
         "index.html".to_string()
     } else {
-        p.trim_start_matches('/').to_string()
-    };
-    let dist = std::path::PathBuf::from("web/dist").join(rel);
-    let bytes = match fs::read(&dist).await {
-        Ok(b) => Ok(b),
-        Err(_) => fs::read("web/dist/index.html").await,
-    };
-    match bytes {
-        Ok(b) => Html(String::from_utf8_lossy(&b).to_string()).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        rel.to_string()
     }
+}
+
+fn embedded_asset_response(path: &str) -> Option<Response> {
+    EMBEDDED_ASSETS
+        .iter()
+        .find(|(asset_path, _, _)| *asset_path == path)
+        .map(|(_, bytes, content_type)| {
+            ([(CONTENT_TYPE, *content_type)], bytes.to_vec()).into_response()
+        })
 }
 
 fn parse_enabled(v: &serde_json::Value) -> Option<bool> {
@@ -625,7 +646,12 @@ pub async fn issue_tls(
         return unauthorized();
     }
     let mut d = state.data.write().await;
-    if let Some(rule) = d.tls.iter().find(|x| x.id == id) {
+    if let Some(domain) = d
+        .tls
+        .iter()
+        .find(|x| x.id == id)
+        .map(|rule| rule.domain.clone())
+    {
         d.tls_artifacts.retain(|x| x.id != id);
         let now = chrono::Utc::now();
         let exp = now + chrono::Duration::days(90);
@@ -633,7 +659,7 @@ pub async fn issue_tls(
             id: id.clone(),
             cert_pem: format!(
                 "-----BEGIN CERTIFICATE-----\nSELF-SIGNED:{}:{}\n-----END CERTIFICATE-----",
-                rule.domain,
+                domain,
                 now.to_rfc3339()
             ),
             key_pem: format!(
