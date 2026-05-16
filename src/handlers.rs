@@ -13,7 +13,7 @@ use ipnet::IpNet;
 use std::net::IpAddr;
 
 use crate::{
-    auth::{bearer, verify_password},
+    auth::{bearer, hash_password, verify_password},
     models::{Config, DdnsRule, IpFilterRule, PortForwardRule, TlsRule, WebServiceRule},
     state::AppState,
 };
@@ -233,12 +233,24 @@ pub async fn get_settings(State(state): State<AppState>, headers: HeaderMap) -> 
         )
             .into_response();
     }
-    (StatusCode::OK, Json(state.config.read().await.clone())).into_response()
+    let cfg = state.config.read().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "username": cfg.admin.username,
+            "password_hash": cfg.admin.password_hash,
+            "port": cfg.admin.port,
+            "safe_entry": cfg.admin.safe_entry,
+            "welcome_shown": cfg.admin.welcome_shown,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+        .into_response()
 }
 pub async fn update_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(cfg): Json<Config>,
+    Json(v): Json<serde_json::Value>,
 ) -> Response {
     if !authorized(&state, &headers).await {
         return unauthorized();
@@ -250,7 +262,60 @@ pub async fn update_settings(
         )
             .into_response();
     }
-    *state.config.write().await = cfg;
+
+    let mut cfg = state.config.write().await;
+    if v.get("admin").is_some() {
+        if let Ok(new_cfg) = serde_json::from_value::<Config>(v) {
+            *cfg = new_cfg;
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"invalid settings"})),
+            )
+                .into_response();
+        }
+    } else {
+        if let Some(username) = v.get("username").and_then(|x| x.as_str()) {
+            if !username.trim().is_empty() {
+                cfg.admin.username = username.trim().to_string();
+            }
+        }
+        if let Some(port) = v.get("port").and_then(|x| x.as_u64()) {
+            if port > 0 && port <= u16::MAX as u64 {
+                cfg.admin.port = port as u16;
+            }
+        }
+        if let Some(safe_entry) = v.get("safe_entry").and_then(|x| x.as_str()) {
+            cfg.admin.safe_entry = safe_entry.trim().trim_matches('/').to_string();
+        }
+        if let Some(new_password) = v.get("new_password").and_then(|x| x.as_str()) {
+            if !new_password.is_empty() {
+                let current_password = v
+                    .get("current_password")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !verify_password(current_password, &cfg.admin.password_hash) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error":"current password is incorrect"})),
+                    )
+                        .into_response();
+                }
+                match hash_password(new_password) {
+                    Ok(hash) => cfg.admin.password_hash = hash,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error":e.to_string()})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+    drop(cfg);
+
     let _ = state.persist_all().await;
     state.apply_engines().await;
     (StatusCode::OK, Json(serde_json::json!({"ok":true}))).into_response()
@@ -1186,12 +1251,7 @@ pub async fn mark_welcome_shown(State(state): State<AppState>, headers: HeaderMa
         )
             .into_response();
     }
-    let mut cfg = state.config.write().await;
-    let mut value = serde_json::to_value(cfg.clone()).unwrap_or_default();
-    value["admin"]["welcome_shown"] = serde_json::json!(true);
-    if let Ok(new_cfg) = serde_json::from_value(value) {
-        *cfg = new_cfg;
-    }
+    state.config.write().await.admin.welcome_shown = true;
     let _ = state.persist_all().await;
     (StatusCode::OK, Json(serde_json::json!({"ok":true}))).into_response()
 }

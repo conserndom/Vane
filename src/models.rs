@@ -11,6 +11,8 @@ pub struct AdminConfig {
     pub password_hash: String,
     pub port: u16,
     pub safe_entry: String,
+    #[serde(default)]
+    pub welcome_shown: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

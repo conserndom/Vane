@@ -128,6 +128,12 @@ if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "$TMP_FILE"; then
   error "下载失败，请检查网络连接或访问 https://github.com/${REPO}/releases 手动下载"
 fi
 
+# GitHub 在资源不存在或下载被代理拦截时可能返回 HTML 页面；提前校验，避免安装成不可执行的网页。
+if [ "$(head -c 4 "$TMP_FILE" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+  rm -f "$TMP_FILE"
+  error "下载到的不是 Linux ELF 二进制文件，可能是 HTML 错误页。请确认 Release 中存在 vane-linux-${ARCH} 后重试"
+fi
+
 # ── 安装二进制 ────────────────────────────────
 mv "$TMP_FILE" "$BINARY_PATH"
 chmod +x "$BINARY_PATH"
@@ -200,8 +206,8 @@ echo -e "  版本        ${BOLD}${VERSION}${NC}"
 echo -e "  安装目录    ${BOLD}${INSTALL_DIR}${NC}"
 echo -e "  服务名称    ${BOLD}${SERVICE_NAME}${NC}"
 echo ""
-echo -e "  ${BOLD}首次运行会在日志中打印临时密码，请执行：${NC}"
-echo -e "  ${YELLOW}journalctl -u ${SERVICE_NAME} -n 30${NC}"
+echo -e "  ${BOLD}访问地址：${NC}${YELLOW}http://your-ip:4455${NC}"
+echo -e "  ${BOLD}默认账号：${NC}${YELLOW}admin / vane1234${NC}（请及时修改密码）"
 echo ""
 echo -e "  ${BOLD}常用命令：${NC}"
 echo -e "  启动服务    ${YELLOW}systemctl start ${SERVICE_NAME}${NC}"

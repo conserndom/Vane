@@ -39,6 +39,7 @@ impl AppState {
                         password_hash: hash_password("vane1234")?,
                         port: 4455,
                         safe_entry: String::new(),
+                        welcome_shown: false,
                     },
                 };
                 fs::write(&cfg_path, serde_json::to_vec_pretty(&d)?).await?;
@@ -51,11 +52,24 @@ impl AppState {
             Err(_) => RuntimeData::default(),
         };
 
+        let now = chrono::Utc::now().timestamp();
+        let mut sessions = HashMap::new();
+        let mut session_expiry = HashMap::new();
+        for session in &data.sessions_meta {
+            if let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(&session.created_at) {
+                let expires_at = created_at.timestamp() + 86400;
+                if expires_at > now {
+                    sessions.insert(session.token.clone(), session.username.clone());
+                    session_expiry.insert(session.token.clone(), expires_at);
+                }
+            }
+        }
+
         Ok(Self {
             config: Arc::new(RwLock::new(cfg)),
             data: Arc::new(RwLock::new(data)),
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-            session_expiry: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(sessions)),
+            session_expiry: Arc::new(RwLock::new(session_expiry)),
             login_attempts: Arc::new(RwLock::new(HashMap::new())),
             engines: RuntimeEngines::default(),
             root,
