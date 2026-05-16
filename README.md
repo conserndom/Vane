@@ -20,8 +20,9 @@
 ## 🚀 快速开始
 
 ```bash
-# 下载二进制
-wget https://github.com/evecus/vane/releases/latest/download/vane-linux-amd64
+# 下载二进制（请用 -fL 跟随 GitHub latest 跳转，并在失败时退出）
+curl -fL https://github.com/evecus/Vane/releases/latest/download/vane-linux-amd64 -o vane-linux-amd64
+file vane-linux-amd64  # 应显示 ELF executable；如果显示 HTML document，说明下载到了网页而不是二进制
 chmod +x vane-linux-amd64
 
 # 运行

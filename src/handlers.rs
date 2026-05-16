@@ -1,8 +1,8 @@
 use axum::{
     body::Body,
     extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode, Uri},
-    response::{Html, IntoResponse, Response},
+    http::{header::CONTENT_TYPE, HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::Utc;
@@ -11,10 +11,9 @@ use serde::Deserialize;
 use axum::extract::Query;
 use ipnet::IpNet;
 use std::net::IpAddr;
-use tokio::fs;
 
 use crate::{
-    auth::{bearer, verify_password},
+    auth::{bearer, hash_password, verify_password},
     models::{Config, DdnsRule, IpFilterRule, PortForwardRule, TlsRule, WebServiceRule},
     state::AppState,
 };
@@ -234,12 +233,24 @@ pub async fn get_settings(State(state): State<AppState>, headers: HeaderMap) -> 
         )
             .into_response();
     }
-    (StatusCode::OK, Json(state.config.read().await.clone())).into_response()
+    let cfg = state.config.read().await;
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "username": cfg.admin.username,
+            "password_hash": cfg.admin.password_hash,
+            "port": cfg.admin.port,
+            "safe_entry": cfg.admin.safe_entry,
+            "welcome_shown": cfg.admin.welcome_shown,
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
+    )
+        .into_response()
 }
 pub async fn update_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(cfg): Json<Config>,
+    Json(v): Json<serde_json::Value>,
 ) -> Response {
     if !authorized(&state, &headers).await {
         return unauthorized();
@@ -251,7 +262,60 @@ pub async fn update_settings(
         )
             .into_response();
     }
-    *state.config.write().await = cfg;
+
+    let mut cfg = state.config.write().await;
+    if v.get("admin").is_some() {
+        if let Ok(new_cfg) = serde_json::from_value::<Config>(v) {
+            *cfg = new_cfg;
+        } else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"invalid settings"})),
+            )
+                .into_response();
+        }
+    } else {
+        if let Some(username) = v.get("username").and_then(|x| x.as_str()) {
+            if !username.trim().is_empty() {
+                cfg.admin.username = username.trim().to_string();
+            }
+        }
+        if let Some(port) = v.get("port").and_then(|x| x.as_u64()) {
+            if port > 0 && port <= u16::MAX as u64 {
+                cfg.admin.port = port as u16;
+            }
+        }
+        if let Some(safe_entry) = v.get("safe_entry").and_then(|x| x.as_str()) {
+            cfg.admin.safe_entry = safe_entry.trim().trim_matches('/').to_string();
+        }
+        if let Some(new_password) = v.get("new_password").and_then(|x| x.as_str()) {
+            if !new_password.is_empty() {
+                let current_password = v
+                    .get("current_password")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if !verify_password(current_password, &cfg.admin.password_hash) {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error":"current password is incorrect"})),
+                    )
+                        .into_response();
+                }
+                match hash_password(new_password) {
+                    Ok(hash) => cfg.admin.password_hash = hash,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error":e.to_string()})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+    drop(cfg);
+
     let _ = state.persist_all().await;
     state.apply_engines().await;
     (StatusCode::OK, Json(serde_json::json!({"ok":true}))).into_response()
@@ -343,29 +407,51 @@ crud!(
     IpFilterRule
 );
 
+include!(concat!(env!("OUT_DIR"), "/embedded_assets.rs"));
+
 pub async fn spa_fallback(State(state): State<AppState>, uri: Uri) -> Response {
     let safe = state.config.read().await.admin.safe_entry.clone();
-    let mut p = uri.path().to_string();
-    if !safe.is_empty() {
-        let prefix = format!("/{}", safe.trim_matches('/'));
-        if p.starts_with(&prefix) {
-            p = p[prefix.len()..].to_string();
+    let rel = frontend_asset_path(uri.path(), &safe);
+
+    if let Some(response) = embedded_asset_response(&rel) {
+        return response;
+    }
+
+    if rel != "index.html" {
+        if let Some(response) = embedded_asset_response("index.html") {
+            return response;
         }
     }
-    let rel = if p == "/" {
+
+    (StatusCode::NOT_FOUND, "not found").into_response()
+}
+
+fn frontend_asset_path(path: &str, safe_entry: &str) -> String {
+    let mut p = path.to_string();
+    if !safe_entry.is_empty() {
+        let prefix = format!("/{}", safe_entry.trim_matches('/'));
+        if p == prefix {
+            p = "/".to_string();
+        } else if let Some(rest) = p.strip_prefix(&format!("{}/", prefix)) {
+            p = format!("/{rest}");
+        }
+    }
+
+    let rel = p.trim_start_matches('/');
+    if rel.is_empty() || rel.split('/').any(|part| part == "..") {
         "index.html".to_string()
     } else {
-        p.trim_start_matches('/').to_string()
-    };
-    let dist = std::path::PathBuf::from("web/dist").join(rel);
-    let bytes = match fs::read(&dist).await {
-        Ok(b) => Ok(b),
-        Err(_) => fs::read("web/dist/index.html").await,
-    };
-    match bytes {
-        Ok(b) => Html(String::from_utf8_lossy(&b).to_string()).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        rel.to_string()
     }
+}
+
+fn embedded_asset_response(path: &str) -> Option<Response> {
+    EMBEDDED_ASSETS
+        .iter()
+        .find(|(asset_path, _, _)| *asset_path == path)
+        .map(|(_, bytes, content_type)| {
+            ([(CONTENT_TYPE, *content_type)], bytes.to_vec()).into_response()
+        })
 }
 
 fn parse_enabled(v: &serde_json::Value) -> Option<bool> {
@@ -625,7 +711,12 @@ pub async fn issue_tls(
         return unauthorized();
     }
     let mut d = state.data.write().await;
-    if let Some(rule) = d.tls.iter().find(|x| x.id == id) {
+    if let Some(domain) = d
+        .tls
+        .iter()
+        .find(|x| x.id == id)
+        .map(|rule| rule.domain.clone())
+    {
         d.tls_artifacts.retain(|x| x.id != id);
         let now = chrono::Utc::now();
         let exp = now + chrono::Duration::days(90);
@@ -633,7 +724,7 @@ pub async fn issue_tls(
             id: id.clone(),
             cert_pem: format!(
                 "-----BEGIN CERTIFICATE-----\nSELF-SIGNED:{}:{}\n-----END CERTIFICATE-----",
-                rule.domain,
+                domain,
                 now.to_rfc3339()
             ),
             key_pem: format!(
@@ -1160,12 +1251,7 @@ pub async fn mark_welcome_shown(State(state): State<AppState>, headers: HeaderMa
         )
             .into_response();
     }
-    let mut cfg = state.config.write().await;
-    let mut value = serde_json::to_value(cfg.clone()).unwrap_or_default();
-    value["admin"]["welcome_shown"] = serde_json::json!(true);
-    if let Ok(new_cfg) = serde_json::from_value(value) {
-        *cfg = new_cfg;
-    }
+    state.config.write().await.admin.welcome_shown = true;
     let _ = state.persist_all().await;
     (StatusCode::OK, Json(serde_json::json!({"ok":true}))).into_response()
 }
